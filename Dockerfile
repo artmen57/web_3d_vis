@@ -1,10 +1,9 @@
-# Используем официальный образ с Python 3.10
-FROM python:3.10-slim
+FROM python:3.9-slim
 
-# Устанавливаем системные зависимости
+WORKDIR /app
+
 RUN apt-get update && apt-get install -y \
-    libpq-dev \
-    gcc \
+    build-essential \
     libgl1-mesa-glx \
     libglib2.0-0 \
     libsm6 \
@@ -13,21 +12,11 @@ RUN apt-get update && apt-get install -y \
     libgomp1 \
     && rm -rf /var/lib/apt/lists/*
 
-# Устанавливаем рабочую директорию
-WORKDIR /app
-
-# Копируем зависимости
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Копируем приложение
 COPY . .
 
-# Делаем скрипт исполняемым
-RUN chmod +x start.sh
+ENV PYTHONUNBUFFERED=1
 
-# Открываем порт
-EXPOSE 8000
-
-# Запускаем через скрипт
-CMD ["./start.sh"]
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--ws-ping-interval", "20", "--ws-ping-timeout", "20"]
