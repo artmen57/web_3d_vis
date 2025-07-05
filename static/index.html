@@ -1,0 +1,1165 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>3D OBJ Model Streaming Viewer</title>
+    <link rel="stylesheet" href="/static/styles/index.css">
+</head>
+<body>
+    <div id="container">
+        <h1>Веб-приложение для визуализации 3D объектов</h1>
+        <div class="info">
+            Оптимизировано для маломощных устройств
+        </div>
+        
+        <!-- Auth section -->
+        <div id="authSection" style="display: none;">
+            <button onclick="showLoginForm()">Вход</button>
+            <button onclick="showRegisterForm()">Регистрация</button>
+        </div>
+        
+        <div id="userSection" style="display: none;">
+            Приветствуем, <span id="username"></span>!
+            <button onclick="logout()">Выход</button>
+            <button onclick="showMyModels()">Мои объекты</button>
+        </div>
+        
+        <!-- Login/Register forms -->
+        <div id="loginForm" style="display: none;" class="upload-section">
+            <h3>Login</h3>
+            <input type="text" id="loginUsername" placeholder="Username or Email">
+            <input type="password" id="loginPassword" placeholder="Password">
+            <button onclick="login()">Вход</button>
+            <button onclick="hideAuthForms()">Отмена</button>
+        </div>
+        
+        <div id="registerForm" style="display: none;" class="upload-section">
+            <h3>Register</h3>
+            <input type="text" id="regUsername" placeholder="Username">
+            <input type="email" id="regEmail" placeholder="Email">
+            <input type="password" id="regPassword" placeholder="Password">
+            <button onclick="register()">Регистрация</button>
+            <button onclick="hideAuthForms()">Отмена</button>
+        </div>
+        
+        <!-- My Models section -->
+        <div id="myModelsSection" style="display: none;" class="upload-section">
+            <h3>Сохраненные модели</h3>
+            <div id="modelsList"></div>
+            <div style="margin-top: 20px; padding: 20px; border: 2px dashed #666; border-radius: 5px;">
+                <p>Перенесите файл модели в окно просмотра модели</p>
+            </div>
+            <button onclick="hideMyModels()">Закрыть</button>
+        </div>
+        
+        <div class="streaming-mode">
+            <h3>Метод визуализации</h3>
+            <div class="mode-slider-container">
+                <span class="mode-label">Серверный</span>
+                <input type="range" id="modeSlider" min="0" max="2" value="0" step="1" oninput="switchModeBySlider(this.value)">
+                <span class="mode-label">Клиентский</span>
+            </div>
+            <div class="mode-description" id="modeDescription">Трансляция через websocket</div>
+        </div>
+        
+        <div class="upload-section" id="uploadSection" style="display: none;">
+            <h3>Загрузите модель файла</h3>
+            <input type="file" id="fileInput" accept=".obj" />
+            <button id="uploadBtn" onclick="uploadModel()" disabled>📁 Загрузить файл</button>
+            <label>
+                <input type="checkbox" id="saveToDb"> Сохранить как 
+            </label>
+            <input type="text" id="modelNameInput" placeholder="Например: куб" style="display: none;">
+            <div class="upload-progress" id="uploadProgress">
+                <div class="upload-progress-bar" id="uploadProgressBar"></div>
+            </div>
+            <div id="uploadStatus"></div>
+        </div>
+        
+        <canvas id="viewer" width="800" height="600" style="display:block;"></canvas>
+        <img id="mjpegViewer" width="800" height="600" style="display:none;">
+        <!-- <canvas id="webglViewer" width="800" height="600" style="display:none;"></canvas> -->
+        <canvas id="threeCanvas" width="800" height="600" style="display:none;"></canvas>
+        
+        <div class="controls">
+            <button onclick="sendCommand('rotate', {direction: 'left'})">⟲ Поворот влево </button>
+            <button onclick="sendCommand('rotate', {direction: 'right'})">⟳ Поворот вправо</button>
+            <button onclick="sendCommand('rotate', {direction: 'up'})">⟲ Наклон вверх</button>
+            <button onclick="sendCommand('rotate', {direction: 'down'})">⟳ Наклон вниз</button>
+            <button onclick="sendCommand('zoom', {direction: 'in'})">🔍+ Приблизить</button>
+            <button onclick="sendCommand('zoom', {direction: 'out'})">🔍- Отдалить</button>
+            <button onclick="toggleAutoRotate()" id="autoRotateBtn">🔄 Презентация</button>
+            <button onclick="sendCommand('reset', {})">🏠 Сброс вида</button>
+        </div>
+        
+        <div class="model-info" id="modelInfo">
+            <strong>Model Info:</strong> <span id="modelDetails">Loading...</span>
+        </div>
+        
+        <div class="info">
+            Status: <span id="status">Connecting...</span><br>
+            FPS: <span id="fps">0</span> | 
+            Latency: <span id="latency">0ms</span> | 
+            Mode: <span id="currentMode">WebSocket</span>
+        </div>
+    </div>
+    
+  
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <!-- <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/examples/js/controls/OrbitControls.js"></script> -->
+
+    <script type="module">
+        //import { OrbitControls } from 'https://cdn.jsdelivr.net/npm/three@0.128.0/examples/jsm/controls/OrbitControls.js';
+        import { OrbitControls } from "https://unpkg.com/three@0.112/examples/jsm/controls/OrbitControls.js";
+        window.OrbitControls = OrbitControls;
+    </script>
+    <script>
+        //import { OrbitControls } from "https://unpkg.com/three@0.112/examples/jsm/controls/OrbitControls.js";
+
+        const canvas = document.getElementById('viewer');
+        const ctx = canvas.getContext('2d');
+        const mjpegImg = document.getElementById('mjpegViewer');
+        const statusEl = document.getElementById('status');
+        const fpsEl = document.getElementById('fps');
+        const latencyEl = document.getElementById('latency');
+        const modelDetailsEl = document.getElementById('modelDetails');
+        const uploadStatusEl = document.getElementById('uploadStatus');
+        const uploadBtnEl = document.getElementById('uploadBtn');
+        const autoRotateBtnEl = document.getElementById('autoRotateBtn');
+        const currentModeEl = document.getElementById('currentMode');
+        const uploadProgressEl = document.getElementById('uploadProgress');
+        const uploadProgressBarEl = document.getElementById('uploadProgressBar');
+        
+        // Адаптивный размер canvas для мобильных устройств
+        /* function resizeCanvases() {
+            const isMobile = window.innerWidth <= 768;
+            if (isMobile) {
+                const width = Math.min(window.innerWidth - 40, 800);
+                const height = Math.round(width * 0.75); // Соотношение 4:3
+                
+                [canvas, document.getElementById('threeCanvas')].forEach(c => {
+                    c.width = width;
+                    c.height = height;
+                });
+                
+                mjpegImg.style.width = width + 'px';
+                mjpegImg.style.height = height + 'px';
+            }
+        } */
+
+        function resizeCanvases() {
+        const isMobile = window.innerWidth <= 768;
+        if (isMobile) {
+            const width = Math.min(window.innerWidth - 40, 800);
+            const height = Math.round(width * 0.75); // Соотношение 4:3
+            
+            // Обновляем размеры всех canvas
+            [canvas, document.getElementById('threeCanvas')].forEach(c => {
+                c.width = width;
+                c.height = height;
+                c.style.width = width + 'px';
+                c.style.height = height + 'px';
+            });
+            
+            mjpegImg.style.width = width + 'px';
+            mjpegImg.style.height = height + 'px';
+            
+            // Обновляем Three.js камеру и рендерер
+            if (typeof threeCamera !== 'undefined' && threeCamera && typeof threeRenderer !== 'undefined' && threeRenderer) {
+                threeCamera.aspect = width / height;
+                threeCamera.updateProjectionMatrix();
+                threeRenderer.setSize(width, height);
+            }
+        }
+    }
+
+        
+        // Вызов при загрузке и изменении размера окна
+        /* resizeCanvases();
+        window.addEventListener('resize', resizeCanvases); */
+        window.addEventListener('DOMContentLoaded', function() {
+            resizeCanvases();
+        });
+        window.addEventListener('resize', resizeCanvases);
+        /* 
+        const webglCanvas = document.getElementById('webglViewer');
+        const gl = webglCanvas.getContext('webgl') || webglCanvas.getContext('experimental-webgl');
+        
+        // WebGL variables
+        let webglRenderer = null; */
+        let currentObjData = null;
+        
+        // Three.js variables
+        let threeScene = null;
+        let threeCamera = null;
+        let threeRenderer = null;
+        let threeMesh = null;
+        let threeControls
+        /* let threeControls = {
+            rotation: { x: 0, y: 0 },
+            zoom: 1.0,
+            autoRotate: false
+        }; */
+        
+        let ws = null;
+        let autoRotateEnabled = false;
+        let frameCount = 0;
+        let lastFpsTime = Date.now();
+        let currentMode = 'websocket';
+        let sessionId = null;  // Store session ID
+        let currentUser = null;  // Store current user info
+        let lastInteractionTime = Date.now();
+        
+        // Check authentication status on load
+        async function checkAuth() {
+            try {
+                const response = await fetch('/auth/me');
+                if (response.ok) {
+                    currentUser = await response.json();
+                    document.getElementById('username').textContent = currentUser.username;
+                    document.getElementById('userSection').style.display = 'block';
+                    document.getElementById('authSection').style.display = 'none';
+                    document.getElementById('uploadSection').style.display = 'block';
+                } else {
+                    document.getElementById('authSection').style.display = 'block';
+                    document.getElementById('userSection').style.display = 'none';
+                    document.getElementById('uploadSection').style.display = 'none';
+                }
+            } catch (error) {
+                console.error('Auth check failed:', error);
+                document.getElementById('authSection').style.display = 'block';
+                document.getElementById('uploadSection').style.display = 'none';
+            }
+        }
+        
+        // Auth functions
+        function showLoginForm() {
+            document.getElementById('loginForm').style.display = 'block';
+            document.getElementById('registerForm').style.display = 'none';
+        }
+        
+        function showRegisterForm() {
+            document.getElementById('registerForm').style.display = 'block';
+            document.getElementById('loginForm').style.display = 'none';
+        }
+        
+        function hideAuthForms() {
+            document.getElementById('loginForm').style.display = 'none';
+            document.getElementById('registerForm').style.display = 'none';
+        }
+        
+        async function login() {
+            const username = document.getElementById('loginUsername').value;
+            const password = document.getElementById('loginPassword').value;
+            
+            try {
+                const response = await fetch('/auth/login', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({username, password})
+                });
+                
+                if (response.ok) {
+                    const data = await response.json();
+                    currentUser = data.user;
+                    document.getElementById('username').textContent = currentUser.username;
+                    document.getElementById('userSection').style.display = 'block';
+                    document.getElementById('authSection').style.display = 'none';
+                    hideAuthForms();
+                    document.getElementById('uploadSection').style.display = 'block';
+                } else {
+                    alert('Login failed. Please check your credentials.');
+                }
+            } catch (error) {
+                alert('Login error: ' + error.message);
+            }
+        }
+        
+        async function register() {
+            const username = document.getElementById('regUsername').value;
+            const email = document.getElementById('regEmail').value;
+            const password = document.getElementById('regPassword').value;
+            
+            try {
+                const response = await fetch('/auth/register', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({username, email, password})
+                });
+                
+                if (response.ok) {
+                    alert('Registration successful! Please login.');
+                    showLoginForm();
+                } else {
+                    const error = await response.json();
+                    alert('Registration failed: ' + error.detail);
+                }
+            } catch (error) {
+                alert('Registration error: ' + error.message);
+            }
+        }
+        
+        async function logout() {
+            try {
+                await fetch('/auth/logout', {method: 'POST'});
+                currentUser = null;
+                document.getElementById('userSection').style.display = 'none';
+                document.getElementById('authSection').style.display = 'block';
+                document.getElementById('uploadSection').style.display = 'none';
+            } catch (error) {
+                console.error('Logout error:', error);
+            }
+        }
+        
+        async function showMyModels() {
+            try {
+                const response = await fetch('/models');
+                if (response.ok) {
+                    const data = await response.json();
+                    const modelsList = document.getElementById('modelsList');
+                    modelsList.innerHTML = '';
+                    
+                    data.models.forEach(model => {
+                        const item = document.createElement('div');
+                        item.className = 'model-item';
+                        item.innerHTML = `
+                            <div>
+                                ${model.thumbnail ? `<img src="data:image/jpeg;base64,${model.thumbnail}" class="model-thumbnail">` : ''}
+                                <span>${model.name} (${model.vertex_count} vertices)</span>
+                            </div>
+                            <div>
+                                <button onclick="loadModel(${model.id})">Загруить</button>
+                                <button onclick="deleteModel(${model.id})">Удалить</button>
+                            </div>
+                        `;
+                        modelsList.appendChild(item);
+                    });
+                    
+                    document.getElementById('myModelsSection').style.display = 'block';
+                }
+            } catch (error) {
+                alert('Failed to load models: ' + error.message);
+            }
+        }
+        
+        function hideMyModels() {
+            document.getElementById('myModelsSection').style.display = 'none';
+        }
+        
+        async function loadModel(modelId) {
+            if (!sessionId) {
+                alert('No active session. Please wait for connection.');
+                return;
+            }
+            
+            const formData = new FormData();
+            formData.append('session_id', sessionId);
+            
+            try {
+                const response = await fetch(`/models/${modelId}/load`, {
+                    method: 'POST',
+                    body: formData
+                });
+                
+                if (response.ok) {
+                    hideMyModels();
+                    requestModelInfo();
+                    // Load model data for WebGL
+                    fetch(`/models/${modelId}`)
+                        .then(res => res.json())
+                        .then(data => {
+                            currentObjData = data.obj_content;
+                            
+                            if (currentMode === 'threejs') {
+                                loadModelToThreeJS(currentObjData);
+                            }
+                        });
+                } else {
+                    alert('Failed to load model');
+                }
+            } catch (error) {
+                alert('Error loading model: ' + error.message);
+            }
+        }
+        
+        async function deleteModel(modelId) {
+            if (confirm('Are you sure you want to delete this model?')) {
+                try {
+                    const response = await fetch(`/models/${modelId}`, {
+                        method: 'DELETE'
+                    });
+                    
+                    if (response.ok) {
+                        showMyModels(); // Refresh list
+                    } else {
+                        alert('Failed to delete model');
+                    }
+                } catch (error) {
+                    alert('Error deleting model: ' + error.message);
+                }
+            }
+        }
+        
+        // Show/hide model name input when save checkbox is toggled
+        document.getElementById('saveToDb').addEventListener('change', function(e) {
+            document.getElementById('modelNameInput').style.display = e.target.checked ? 'block' : 'none';
+        });
+        
+        function switchModeBySlider(value) {
+            const modes = ['websocket', 'mjpeg', 'threejs'];
+            const descriptions = ['Трансляция через websocket', 'MJPEG Streaming', 'Клиентская визуализация'];
+            
+            const mode = modes[parseInt(value)];
+            document.getElementById('modeDescription').textContent = descriptions[parseInt(value)];
+            
+            switchMode(mode);
+            
+            // Force animation start for Three.js
+            if (mode === 'threejs') {
+                animateThreeJS();
+            }
+        }
+        /* 
+        function switchMode(mode) {
+            currentMode = mode;
+            currentModeEl.textContent = mode === 'websocket' ? 'WebSocket' : mode === 'mjpeg' ? 'MJPEG' : 'Three.js';
+            
+            // Hide all canvases
+            canvas.style.display = 'none';
+            mjpegImg.style.display = 'none';
+            webglCanvas.style.display = 'none';
+            document.getElementById('threeCanvas').style.display = 'none';
+            
+            if (mode === 'websocket') {
+                canvas.style.display = 'block';
+                if (ws && ws.readyState === WebSocket.CLOSED) {
+                    connect();
+                }
+            } else if (mode === 'mjpeg') {
+                mjpegImg.style.display = 'block';
+                if (sessionId) {
+                    mjpegImg.src = `/mjpeg_stream/${sessionId}`;
+                }
+            } else if (mode === 'threejs') {
+                document.getElementById('threeCanvas').style.display = 'block';
+                
+                // Stop server streaming
+                if (ws && ws.readyState === WebSocket.OPEN) {
+                    ws.send(JSON.stringify({
+                        type: 'command',
+                        command: 'pause_streaming',
+                        params: {}
+                    }));
+                }
+                
+                // Initialize Three.js if not already done
+                if (!threeScene) {
+                    initThreeJS();
+                }
+                
+                // Load current model if available
+                if (currentObjData) {
+                    loadModelToThreeJS(currentObjData);
+                } else if (!threeMesh) {
+                    // If no mesh exists, init will create default cube
+                    initThreeJS();
+                }
+                
+                // Start animation
+                animateThreeJS();
+            }
+        }
+         */
+
+        function switchMode(mode) {
+            currentMode = mode;
+            currentModeEl.textContent = mode === 'websocket' ? 'WebSocket' : mode === 'mjpeg' ? 'MJPEG' : 'Three.js';
+            
+            // Hide all canvases first
+            canvas.style.display = 'none';
+            mjpegImg.style.display = 'none';
+
+            document.getElementById('threeCanvas').style.display = 'none';
+            
+            if (mode === 'websocket') {
+                canvas.style.display = 'block';
+                if (ws && ws.readyState === WebSocket.CLOSED) {
+                    connect();
+                }
+            } else if (mode === 'mjpeg') {
+                mjpegImg.style.display = 'block';
+                if (sessionId) {
+                    mjpegImg.src = `/mjpeg_stream/${sessionId}`;
+                }
+            } else if (mode === 'threejs') {
+                const threeCanvasElement = document.getElementById('threeCanvas');
+                threeCanvasElement.style.display = 'block';
+                
+                // Stop server streaming
+                if (ws && ws.readyState === WebSocket.OPEN) {
+                    ws.send(JSON.stringify({
+                        type: 'command',
+                        command: 'pause_streaming',
+                        params: {}
+                    }));
+                }
+                
+                // Initialize Three.js if not already done
+                if (!threeScene) {
+                    initThreeJS();
+                }
+                
+                // Load current model if available, otherwise keep default cube
+                if (currentObjData) {
+                    loadModelToThreeJS(currentObjData);
+                } else if (!threeMesh) {
+                    // If no mesh exists, init will create default cube
+                    initThreeJS();
+                }
+                
+                // Start animation
+                animateThreeJS();
+            }
+        }
+
+        function connect() {
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            ws = new WebSocket(`${protocol}//${window.location.host}/ws`);
+            
+            ws.onopen = function() {
+                statusEl.textContent = 'Connected';
+                statusEl.style.color = '#4CAF50';
+                requestModelInfo();
+                
+                // Set binary type for better performance
+                ws.binaryType = 'arraybuffer';
+            };
+            
+            ws.onmessage = function(event) {
+                // Handle binary frames
+                if (event.data instanceof ArrayBuffer) {
+                    const view = new DataView(event.data);
+                    const timestamp = Number(view.getBigUint64(0, false)); // Read timestamp (big-endian)
+                    
+                    // Calculate latency
+                    const now = Date.now();
+                    const latency = now - timestamp;
+                    latencyEl.textContent = latency + 'ms';
+                    
+                    // Extract JPEG data (skip first 8 bytes of timestamp)
+                    const jpegData = event.data.slice(8);
+                    const blob = new Blob([jpegData], { type: 'image/jpeg' });
+                    const url = URL.createObjectURL(blob);
+                    
+                    const img = new Image();
+                    img.onload = function() {
+                        ctx.drawImage(img, 0, 0);
+                        URL.revokeObjectURL(url); // Clean up
+                        
+                        frameCount++;
+                        if (now - lastFpsTime >= 1000) {
+                            fpsEl.textContent = frameCount;
+                            // Show reduced FPS indicator when idle
+                            const idleTime = now - lastInteractionTime;
+                            if (idleTime > 2000) {
+                                fpsEl.textContent = frameCount + ' (idle)';
+                            }
+                            frameCount = 0;
+                            lastFpsTime = now;
+                        }
+                    };
+                    img.src = url;
+                    return;
+                }
+                
+                // Handle text messages (JSON)
+                const data = JSON.parse(event.data);
+                
+                if (data.type === 'session_created') {
+                    sessionId = data.session_id;
+                    console.log('Session created:', sessionId);
+                    // Update UI to show session ID
+                    const sessionInfo = document.createElement('div');
+                    sessionInfo.className = 'info';
+                    sessionInfo.innerHTML = `Session ID: <span style="color: #0088ff; font-family: monospace;">${sessionId.substring(0, 8)}</span>`;
+                    document.querySelector('.model-info').before(sessionInfo);
+                    // Enable upload button
+                    uploadBtnEl.disabled = false;
+                } else if (data.type === 'frame') {
+                    const now = Date.now();
+                    const latency = now - data.timestamp;
+                    latencyEl.textContent = latency + 'ms';
+                    
+                    const img = new Image();
+                    img.onload = function() {
+                        ctx.drawImage(img, 0, 0);
+                        
+                        frameCount++;
+                        if (now - lastFpsTime >= 1000) {
+                            fpsEl.textContent = frameCount;
+                            frameCount = 0;
+                            lastFpsTime = now;
+                        }
+                    };
+                    img.src = 'data:image/jpeg;base64,' + data.frame;
+                } else if (data.type === 'model_info') {
+                    updateModelInfo(data.info);
+                }
+            };
+            
+            ws.onclose = function() {
+                statusEl.textContent = 'Disconnected';
+                statusEl.style.color = '#ff4444';
+                sessionId = null;  // Clear session ID on disconnect
+                uploadBtnEl.disabled = true;  // Disable upload button
+                if (currentMode === 'websocket') {
+                    setTimeout(connect, 2000);
+                }
+            };
+            
+            ws.onerror = function() {
+                statusEl.textContent = 'Connection Error';
+                statusEl.style.color = '#ff4444';
+            };
+        }
+        
+        function sendCommand(command, params = {}) {
+            // Handle Three.js mode locally
+            if (currentMode === 'threejs') {
+                if (command === 'rotate') {
+                    const dir = params.direction;
+                    if (dir === 'left') threeControls.rotation.y -= 0.1;
+                    else if (dir === 'right') threeControls.rotation.y += 0.1;
+                    else if (dir === 'up') threeControls.rotation.x -= 0.1;
+                    else if (dir === 'down') threeControls.rotation.x += 0.1;
+                } else if (command === 'zoom') {
+                    if (params.direction === 'in') {
+                        threeControls.zoom = Math.min(threeControls.zoom * 1.1, 5.0);
+                    } else {
+                        threeControls.zoom = Math.max(threeControls.zoom * 0.9, 0.1);
+                    }
+                } else if (command === 'reset') {
+                    threeControls.rotation.x = 0;
+                    threeControls.rotation.y = 0;
+                    threeControls.zoom = 1.0;
+                }
+                return;
+            }
+            
+            // Send via WebSocket if connected
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({
+                    type: 'command',
+                    command: command,
+                    params: params,
+                    timestamp: Date.now()
+                }));
+            } else {
+                // Send via HTTP POST as fallback
+                fetch('/command', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({command, params, session_id: sessionId})
+                });
+            }
+        }
+        
+        function requestModelInfo() {
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({type: 'get_model_info'}));
+            }
+        }
+        
+        function updateModelInfo(info) {
+            modelDetailsEl.textContent = `${info.name} (${info.vertices} vertices, ${info.faces} faces)`;
+        }
+        
+        function toggleAutoRotate() {
+            autoRotateEnabled = !autoRotateEnabled;
+            
+            if (currentMode === 'threejs') {
+                threeControls.autoRotate = autoRotateEnabled;
+            } else {
+                sendCommand('auto_rotate', {enabled: autoRotateEnabled});
+            }
+            
+            autoRotateBtnEl.textContent = autoRotateEnabled ? '⏸️ Stop Rotation' : '🔄 Auto Rotate';
+            autoRotateBtnEl.style.background = autoRotateEnabled ? '#cc6600' : '#0066cc';
+        }
+        
+        async function uploadModel() {
+            const fileInput = document.getElementById('fileInput');
+            const file = fileInput.files[0];
+            
+            if (!file) {
+                alert('Please select an OBJ file first!');
+                return;
+            }
+            
+            if (!file.name.toLowerCase().endsWith('.obj')) {
+                alert('Please select a valid .obj file!');
+                return;
+            }
+            
+            // Check if we have a session ID
+            if (!sessionId) {
+                alert('No active session. Please wait for connection or refresh the page.');
+                return;
+            }
+            
+            const formData = new FormData();
+            formData.append('file', file);
+            formData.append('session_id', sessionId);
+            
+            // Add save to DB options
+            const saveToDb = document.getElementById('saveToDb').checked;
+            formData.append('save_to_db', saveToDb);
+            if (saveToDb) {
+                const modelName = document.getElementById('modelNameInput').value || file.name;
+                formData.append('model_name', modelName);
+            }
+            
+            uploadBtnEl.disabled = true;
+            uploadBtnEl.textContent = 'Uploading...';
+            uploadStatusEl.textContent = 'Uploading model...';
+            uploadProgressEl.style.display = 'block';
+            uploadProgressBarEl.style.width = '0%';
+            
+            // Simulate progress (since we can't track real upload progress easily)
+            let progress = 0;
+            const progressInterval = setInterval(() => {
+                progress += 10;
+                if (progress <= 90) {
+                    uploadProgressBarEl.style.width = progress + '%';
+                }
+            }, 100);
+            
+            try {
+                const response = await fetch('/upload_obj', {
+                    method: 'POST',
+                    body: formData
+                });
+                
+                clearInterval(progressInterval);
+                uploadProgressBarEl.style.width = '100%';
+                
+                if (response.ok) {
+                    const result = await response.json();
+                    uploadStatusEl.textContent = `✅ Successfully loaded: ${result.model_name}`;
+                    uploadStatusEl.style.color = '#4CAF50';
+                    
+                    setTimeout(() => {
+                        requestModelInfo();
+                        uploadProgressEl.style.display = 'none';
+                        uploadProgressBarEl.style.width = '0%';
+                    }, 1000);
+                    
+                } else {
+                    const error = await response.json();
+                    uploadStatusEl.textContent = `❌ Error: ${error.detail}`;
+                    uploadStatusEl.style.color = '#ff4444';
+                    uploadProgressEl.style.display = 'none';
+                }
+            } catch (error) {
+                clearInterval(progressInterval);
+                uploadStatusEl.textContent = `❌ Upload failed: ${error.message}`;
+                uploadStatusEl.style.color = '#ff4444';
+                uploadProgressEl.style.display = 'none';
+            }
+            
+            uploadBtnEl.disabled = false;
+            uploadBtnEl.textContent = '📁 Upload OBJ File';
+        }
+        
+        // Mouse/touch controls
+        let isDragging = false;
+        let lastMouseX = 0;
+        let lastMouseY = 0;
+        
+        function setupControls(element) {
+            element.addEventListener('mousedown', function(e) {
+                lastInteractionTime = Date.now();
+                isDragging = true;
+                lastMouseX = e.clientX;
+                lastMouseY = e.clientY;
+            });
+            
+            element.addEventListener('mousemove', function(e) {
+                lastInteractionTime = Date.now();
+                if (isDragging) {
+                    const deltaX = e.clientX - lastMouseX;
+                    const deltaY = e.clientY - lastMouseY;
+                    
+                    sendCommand('mouse_drag', {deltaX: deltaX, deltaY: deltaY});
+                    
+                    lastMouseX = e.clientX;
+                    lastMouseY = e.clientY;
+                }
+            });
+            
+            element.addEventListener('mouseup', function() {
+                isDragging = false;
+            });
+            
+            element.addEventListener('wheel', function(e) {
+                lastInteractionTime = Date.now();
+                e.preventDefault();
+                sendCommand('zoom', {direction: e.deltaY > 0 ? 'out' : 'in'});
+            });
+            
+            // Touch support
+            element.addEventListener('touchstart', function(e) {
+                lastInteractionTime = Date.now();
+                e.preventDefault();
+                if (e.touches.length === 1) {
+                    isDragging = true;
+                    lastMouseX = e.touches[0].clientX;
+                    lastMouseY = e.touches[0].clientY;
+                }
+            });
+            
+            element.addEventListener('touchmove', function(e) {
+                lastInteractionTime = Date.now();
+                e.preventDefault();
+                if (isDragging && e.touches.length === 1) {
+                    const deltaX = e.touches[0].clientX - lastMouseX;
+                    const deltaY = e.touches[0].clientY - lastMouseY;
+                    
+                    sendCommand('mouse_drag', {deltaX: deltaX, deltaY: deltaY});
+                    
+                    lastMouseX = e.touches[0].clientX;
+                    lastMouseY = e.touches[0].clientY;
+                }
+            });
+            
+            element.addEventListener('touchend', function(e) {
+                e.preventDefault();
+                isDragging = false;
+            });
+        }
+        
+        // Setup controls for both canvas and image
+        setupControls(canvas);
+        setupControls(mjpegImg);
+        
+        
+        
+        // Setup controls for Three.js canvas
+        const threeCanvas = document.getElementById('threeCanvas');
+        setupControls(threeCanvas);
+        /* 
+        // Three.js specific controls
+        threeCanvas.addEventListener('mousemove', function(e) {
+            if (isDragging && currentMode === 'threejs') {
+                const deltaX = e.clientX - lastMouseX;
+                const deltaY = e.clientY - lastMouseY;
+                
+                threeControls.rotation.y += deltaX * 0.01;
+                threeControls.rotation.x += deltaY * 0.01;
+                
+                lastMouseX = e.clientX;
+                lastMouseY = e.clientY;
+            }
+        });
+        
+        threeCanvas.addEventListener('wheel', function(e) {
+            e.preventDefault();
+            if (currentMode === 'threejs') {
+                threeControls.zoom *= e.deltaY > 0 ? 0.9 : 1.1;
+                threeControls.zoom = Math.max(0.1, Math.min(5.0, threeControls.zoom));
+            }
+        });
+        
+        // Touch support для Three.js
+        threeCanvas.addEventListener('touchstart', function(e) {
+            lastInteractionTime = Date.now();
+            e.preventDefault();
+            if (e.touches.length === 1) {
+                isDragging = true;
+                lastMouseX = e.touches[0].clientX;
+                lastMouseY = e.touches[0].clientY;
+            }
+        }, { passive: false });
+
+        threeCanvas.addEventListener('touchmove', function(e) {
+            lastInteractionTime = Date.now();
+            e.preventDefault();
+            if (isDragging && e.touches.length === 1 && currentMode === 'threejs') {
+                const deltaX = e.touches[0].clientX - lastMouseX;
+                const deltaY = e.touches[0].clientY - lastMouseY;
+                
+                threeControls.rotation.y += deltaX * 0.01;
+                threeControls.rotation.x += deltaY * 0.01;
+                
+                lastMouseX = e.touches[0].clientX;
+                lastMouseY = e.touches[0].clientY;
+            }
+        }, { passive: false });
+
+        threeCanvas.addEventListener('touchend', function(e) {
+            e.preventDefault();
+            isDragging = false;
+        }, { passive: false });
+         */
+        
+        // Monitor MJPEG stream performance
+        setInterval(() => {
+            if (currentMode === 'mjpeg' && mjpegImg.style.display !== 'none') {
+                // For MJPEG mode, we estimate FPS based on image updates
+                statusEl.textContent = 'Streaming';
+                statusEl.style.color = '#4CAF50';
+            }
+        }, 1000);
+        
+        // Setup drag & drop on canvas
+        canvas.addEventListener('dragover', function(e) {
+            e.preventDefault();
+            e.stopPropagation();
+            canvas.style.border = '3px dashed #0088ff';
+        });
+        
+        canvas.addEventListener('dragleave', function(e) {
+            e.preventDefault();
+            e.stopPropagation();
+            canvas.style.border = '2px solid #444';
+        });
+        
+        canvas.addEventListener('drop', async function(e) {
+            e.preventDefault();
+            e.stopPropagation();
+            canvas.style.border = '2px solid #444';
+            
+            if (!currentUser) {
+                alert('Please login to upload models');
+                return;
+            }
+            
+            if (!sessionId) {
+                alert('No active session. Please wait for connection.');
+                return;
+            }
+            
+            const files = e.dataTransfer.files;
+            if (files.length > 0 && files[0].name.toLowerCase().endsWith('.obj')) {
+                const file = files[0];
+                const formData = new FormData();
+                formData.append('file', file);
+                formData.append('session_id', sessionId);
+                formData.append('save_to_db', 'true');
+                formData.append('model_name', file.name);
+                
+                try {
+                    const response = await fetch('/upload_obj', {
+                        method: 'POST',
+                        body: formData
+                    });
+                    
+                    if (response.ok) {
+                        const result = await response.json();
+                        statusEl.textContent = `Loaded: ${result.model_name}`;
+                        requestModelInfo();
+                        // Store OBJ data for WebGL mode
+                        fetch(`/models/${result.saved_model_id}`)
+                            .then(res => res.json())
+                            .then(data => {
+                                currentObjData = data.obj_content;
+                                if (currentMode === 'threejs') {
+                                    loadModelToThreeJS(currentObjData);
+                                }
+                            })
+                            .catch(err => console.error('Failed to fetch model data:', err));
+                    } else {
+                        const error = await response.json();
+                        alert('Upload failed: ' + error.detail);
+                    }
+                } catch (error) {
+                    alert('Upload error: ' + error.message);
+                }
+            } else {
+                alert('Please drop a valid .obj file');
+            }
+        });
+        
+        
+        
+        
+        
+        
+        // Three.js functions
+        function initThreeJS() {
+            const threeCanvas = document.getElementById('threeCanvas');
+            
+            // Scene
+            threeScene = new THREE.Scene();
+            threeScene.background = new THREE.Color(0x141420);
+            
+            // Camera
+            threeCamera = new THREE.PerspectiveCamera(
+                45,
+                threeCanvas.width / threeCanvas.height,
+                0.1,
+                1000
+            );
+            threeCamera.position.z = 5;
+            
+            // Renderer
+            threeRenderer = new THREE.WebGLRenderer({ 
+                canvas: threeCanvas,
+                antialias: true
+            });
+            threeRenderer.setSize(threeCanvas.width, threeCanvas.height);
+            
+            threeControls = new OrbitControls(threeCamera, threeRenderer.domElement);
+            threeControls.enableDamping   = true;  // плавность вращения
+            threeControls.dampingFactor   = 0.05;
+            threeControls.enableZoom      = true;  // колесо/щипок
+            threeControls.autoRotate      = false; // автоворот по кнопке
+            threeControls.autoRotateSpeed = 1.0;
+            //threeRenderer.domElement.style.touchAction = 'none';
+
+            // Обновить параметры камеры для мобильных
+            threeCamera.aspect = threeCanvas.width / threeCanvas.height;
+            threeCamera.updateProjectionMatrix();
+            
+            // Lights
+            const ambientLight = new THREE.AmbientLight(0x404040);
+            threeScene.add(ambientLight);
+            
+            const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
+            directionalLight.position.set(5, 5, 5);
+            threeScene.add(directionalLight);
+            
+            // Add grid helper
+            /* const gridHelper = new THREE.GridHelper(10, 10, 0x444444, 0x222222);
+            threeScene.add(gridHelper); */
+            // Create default cube
+            const cubeGeometry = new THREE.BoxGeometry(2, 2, 2);
+            const cubeMaterial = new THREE.MeshPhongMaterial({
+                color: 0x808080,
+                specular: 0x222222,
+                shininess: 25
+            });
+            threeMesh = new THREE.Mesh(cubeGeometry, cubeMaterial);
+            threeScene.add(threeMesh);
+            // Force initial render
+            threeRenderer.render(threeScene, threeCamera);
+        }
+        
+        function loadModelToThreeJS(objContent) {
+            // Remove existing mesh
+            if (threeMesh) {
+                threeScene.remove(threeMesh);
+                threeMesh.geometry.dispose();
+                threeMesh.material.dispose();
+            }
+            
+            // Parse OBJ manually (simple parser)
+            const vertices = [];
+            const faces = [];
+            const lines = objContent.split('\n');
+            
+            for (const line of lines) {
+                const parts = line.trim().split(/\s+/);
+                
+                if (parts[0] === 'v') {
+                    vertices.push(new THREE.Vector3(
+                        parseFloat(parts[1]),
+                        parseFloat(parts[2]),
+                        parseFloat(parts[3])
+                    ));
+                } else if (parts[0] === 'f') {
+                    const faceIndices = [];
+                    for (let i = 1; i < parts.length; i++) {
+                        const index = parseInt(parts[i].split('/')[0]) - 1;
+                        faceIndices.push(index);
+                    }
+                    
+                    if (faceIndices.length === 3) {
+                        faces.push(new THREE.Face3(
+                            faceIndices[0],
+                            faceIndices[1],
+                            faceIndices[2]
+                        ));
+                    } else if (faceIndices.length === 4) {
+                        // Convert quad to triangles
+                        faces.push(new THREE.Face3(
+                            faceIndices[0],
+                            faceIndices[1],
+                            faceIndices[2]
+                        ));
+                        faces.push(new THREE.Face3(
+                            faceIndices[0],
+                            faceIndices[2],
+                            faceIndices[3]
+                        ));
+                    }
+                }
+            }
+            
+            // Create geometry
+            const geometry = new THREE.Geometry();
+            geometry.vertices = vertices;
+            geometry.faces = faces;
+            
+            // Center and scale
+            geometry.computeBoundingBox();
+            const center = geometry.boundingBox.getCenter(new THREE.Vector3());
+            geometry.translate(-center.x, -center.y, -center.z);
+            
+            const size = geometry.boundingBox.getSize(new THREE.Vector3());
+            const maxDim = Math.max(size.x, size.y, size.z);
+            const scale = 2 / maxDim;
+            geometry.scale(scale, scale, scale);
+            
+            // Compute normals for lighting
+            geometry.computeFaceNormals();
+            geometry.computeVertexNormals();
+            
+            // Create material (grey)
+            const material = new THREE.MeshPhongMaterial({
+                color: 0x808080,
+                specular: 0x222222,
+                shininess: 25,
+                side: THREE.DoubleSide
+            });
+            
+            // Create mesh
+            threeMesh = new THREE.Mesh(geometry, material);
+            threeScene.add(threeMesh);
+            
+            // Reset controls
+            threeControls.rotation.x = 0;
+            threeControls.rotation.y = 0;
+            threeControls.zoom = 1.0;
+        }
+        
+        function animateThreeJS() {
+            if (currentMode !== 'threejs' || !threeRenderer) return;
+            
+            requestAnimationFrame(animateThreeJS);
+            
+            // Apply rotations and zoom
+            /* if (threeMesh) {
+                if (threeControls.autoRotate) {
+                    threeControls.rotation.y += 0.02;
+                }
+                
+                threeMesh.rotation.x = threeControls.rotation.x;
+                threeMesh.rotation.y = threeControls.rotation.y;
+                
+                // Apply zoom by moving camera
+                threeCamera.position.z = 5 / threeControls.zoom;
+            } */
+            threeControls.update()
+            threeRenderer.render(threeScene, threeCamera);
+        }
+        
+        // Start connection
+        connect();
+        // Check authentication
+        checkAuth();
+    </script>
+
+</body>
+</html>
